@@ -1,0 +1,10 @@
+.DS_Store
+
+bin/
+build/
+obj/
+
+*.xcuserstate
+xcuserdata/
+
+*.log
