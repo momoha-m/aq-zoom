@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <regex>
 #include <sstream>
 #include <sys/stat.h>
 #include <unordered_map>
@@ -81,6 +82,39 @@ bool typeUsedForDisplayNormalization(int type) {
 float packedTypeIntensityValue(int type, float intensity) {
 	return static_cast<float>(type) + ofClamp(intensity, 0.0f, 1.0f) * 0.5f;
 }
+
+std::filesystem::path cacheOnlyPath() {
+	if(const char* value = std::getenv("AQ_ZOOM_CACHE")) {
+		if(value[0] != '\0') {
+			return value;
+		}
+	}
+	return {};
+}
+
+std::vector<SnapshotFrameInfo> discoverCacheFrames(const std::filesystem::path& cachePath) {
+	std::vector<SnapshotFrameInfo> frames;
+	const std::regex pattern(R"(^frame-([0-9]+)\.bin$)");
+	std::error_code ec;
+	for(const auto& entry : std::filesystem::directory_iterator(cachePath, ec)) {
+		if(ec || !entry.is_regular_file(ec)) {
+			continue;
+		}
+		std::smatch match;
+		const std::string filename = entry.path().filename().string();
+		if(!std::regex_match(filename, match, pattern)) {
+			continue;
+		}
+		SnapshotFrameInfo frame;
+		frame.frameNumber = std::stoi(match[1].str());
+		frame.filePath = entry.path().string();
+		frames.push_back(std::move(frame));
+	}
+	std::sort(frames.begin(), frames.end(), [](const SnapshotFrameInfo& a, const SnapshotFrameInfo& b) {
+		return a.frameNumber < b.frameNumber;
+	});
+	return frames;
+}
 }
 
 void ofApp::setup() {
@@ -100,7 +134,12 @@ void ofApp::setup() {
 	ofLogNotice() << "[aq-zoom] Setup started";
 	dataDirectoryPath = resolveDataDirectoryPath();
 	ofLogNotice() << "[aq-zoom] Dataset path: " << dataDirectoryPath;
-	frameInfos = loader.discoverFrames(dataDirectoryPath);
+	if(const auto cachePath = cacheOnlyPath(); !cachePath.empty()) {
+		frameInfos = discoverCacheFrames(cachePath);
+		ofLogNotice() << "[aq-zoom] Cache-only mode: " << cachePath.string();
+	} else {
+		frameInfos = loader.discoverFrames(dataDirectoryPath);
+	}
 	if(frameInfos.empty()) {
 		statusMessage = "No snapshot_*.hdf5 files found";
 		ofLogError() << "[aq-zoom] " << statusMessage << " in " << dataDirectoryPath;
@@ -580,6 +619,10 @@ bool ofApp::preloadAllFrameData() {
 		ofLogNotice() << "[aq-zoom] Preload finished from cache in " << ofToString(preloadMs, 1) << " ms";
 		return true;
 	}
+	if(!cacheOnlyPath().empty()) {
+		ofLogError() << "[aq-zoom] Cache-only mode requires a complete valid cache at " << cacheDirectory;
+		return false;
+	}
 
 	ofLogNotice() << "[aq-zoom] No usable cache found. Building cache from local HDF5 files";
 	std::error_code ec;
@@ -727,6 +770,10 @@ bool ofApp::preloadAllFrameData() {
 }
 
 std::filesystem::path ofApp::buildCacheDirectory() const {
+	if(const auto cachePath = cacheOnlyPath(); !cachePath.empty()) {
+		return cachePath;
+	}
+
 	std::uint64_t signature = 14695981039346656037ull;
 	signature = fnv1aString(signature, dataDirectoryPath);
 	signature = fnv1aValue(signature, kCacheDirectorySignatureVersion);
